@@ -1,24 +1,41 @@
 # TerraSync Backend
 
-The backend will provide the API, business logic, synchronization services, reporting services, and authentication.
+FastAPI backend foundation for TerraSync.
 
-## Planned Stack
+## Features in this starter
 
-- Python
-- FastAPI
-- Pydantic
-- PostgreSQL
-- Redis
-- SQLAlchemy
-- Docker
+- FastAPI application structure
+- Health check endpoint
+- Work orders endpoint
+- Sites endpoint
+- Inspection templates endpoint
+- Reports endpoint
+- Defects endpoint
+- PostgreSQL-ready configuration
+- SQLAlchemy database setup
+- Pydantic schemas
+- Docker support
 
-## Planned Services
+## Run locally
 
-- Authentication service
-- Work order service
-- Inspection template service
-- Report service
-- Defect service
-- Sync service
-- Notification service
-- Export service
+```bash
+cd backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+## Environment variables
+
+Copy `.env.example` to `.env`.
+
+```bash
+cp .env.example .env
+```
