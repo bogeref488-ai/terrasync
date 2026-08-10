@@ -2,12 +2,13 @@ from pydantic import BaseModel
 
 
 class ReportBase(BaseModel):
-    report_no: str
-    work_order_no: str
+    report_id: str
+    work_order_id: str
     site_id: str
-    report_type: str
-    status: str = "Draft"
-    summary: str | None = None
+    inspector_name: str
+    inspection_status: str
+    findings: str
+    recommendations: str
 
 
 class ReportCreate(ReportBase):
@@ -16,6 +17,7 @@ class ReportCreate(ReportBase):
 
 class ReportRead(ReportBase):
     id: int
+    created_at: str
 
     class Config:
         from_attributes = True

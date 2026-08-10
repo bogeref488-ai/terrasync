@@ -1,12 +1,12 @@
 from app.db.session import Base, engine
 
-# Import models so SQLAlchemy registers them.
-from app.models.user import User  # noqa: F401
-from app.models.site import Site  # noqa: F401
-from app.models.work_order import WorkOrder  # noqa: F401
-from app.models.report import InspectionReport  # noqa: F401
-from app.models.defect import Defect  # noqa: F401
+from app.models.user import User
+from app.models.site import Site
+from app.models.work_order import WorkOrder
+from app.models.report import Report
+from app.models.inspection_template import InspectionTemplate
+from app.models.defect import Defect
 
 
-def init_db() -> None:
+def init_db():
     Base.metadata.create_all(bind=engine)

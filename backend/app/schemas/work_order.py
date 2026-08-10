@@ -2,12 +2,13 @@ from pydantic import BaseModel
 
 
 class WorkOrderBase(BaseModel):
-    work_order_no: str
+    work_order_id: str
     site_id: str
-    report_type: str
-    priority: str = "Medium"
-    status: str = "New"
-    assigned_to: str | None = None
+    title: str
+    description: str
+    priority: str
+    status: str
+    assigned_to: str
 
 
 class WorkOrderCreate(WorkOrderBase):
