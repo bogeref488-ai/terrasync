@@ -5,6 +5,7 @@ from app.api.v1.routers import defects
 from app.api.v1.routers import inspection_templates
 from app.api.v1.routers import reports
 from app.api.v1.routers import sites
+from app.api.v1.routers import uploads
 from app.api.v1.routers import work_orders
 
 
@@ -19,4 +20,5 @@ api_router.include_router(
     tags=["inspection templates"],
 )
 api_router.include_router(reports.router, prefix="/reports", tags=["reports"])
+api_router.include_router(uploads.router, prefix="/uploads", tags=["uploads"])
 api_router.include_router(defects.router, prefix="/defects", tags=["defects"])

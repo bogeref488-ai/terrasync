@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -10,7 +11,13 @@ from app.models.inspection_template import InspectionTemplate
 from app.models.report import Report
 from app.models.site import Site
 from app.models.work_order import WorkOrder
-from app.schemas.report import ReportApprovalUpdate, ReportCreate, ReportRead
+from app.policies.report_rules import get_report_photo_rule
+from app.schemas.report import (
+    ReportApprovalUpdate,
+    ReportCreate,
+    ReportRead,
+
+)
 
 router = APIRouter()
 
@@ -35,6 +42,9 @@ def serialize_report(report: Report) -> dict:
         "inspector_company": report.inspector_company,
         "inspection_status": report.inspection_status,
         "approval_status": report.approval_status,
+        "coordinator_name": report.coordinator_name,
+        "coordinator_comment": report.coordinator_comment,
+        "reviewed_at": report.reviewed_at,
         "findings": report.findings,
         "recommendations": report.recommendations,
         "answers": json.loads(report.answers),
@@ -42,6 +52,176 @@ def serialize_report(report: Report) -> dict:
         "created_at": report.created_at,
     }
 
+
+def count_reports_by_field(db: Session, field):
+    rows = (
+        db.query(field, func.count(Report.id))
+        .group_by(field)
+        .all()
+    )
+
+    return [
+        {
+            "name": row[0] or "Unknown",
+            "count": row[1],
+        }
+        for row in rows
+    ]
+
+
+def get_defects_by_severity(db: Session) -> list[dict]:
+    reports = db.query(Report).all()
+
+    severity_counts: dict[str, int] = {
+        "Low": 0,
+        "Medium": 0,
+        "High": 0,
+        "Critical": 0,
+        "Unknown": 0,
+    }
+
+    for report in reports:
+        if not report.defects:
+            continue
+
+        try:
+            defects = json.loads(report.defects)
+        except json.JSONDecodeError:
+            continue
+
+        for defect in defects:
+            severity = defect.get("severity") or "Unknown"
+
+            if severity not in severity_counts:
+                severity_counts[severity] = 0
+
+            severity_counts[severity] += 1
+
+    return [
+        {
+            "severity": severity,
+            "count": count,
+        }
+        for severity, count in severity_counts.items()
+    ]
+
+
+@router.get("/dashboard/status", response_model=dict)
+def report_status_dashboard(db: Session = Depends(get_db)):
+    total_reports = db.query(Report).count()
+
+    pending_review = (
+        db.query(Report)
+        .filter(Report.approval_status == "Pending Review")
+        .count()
+    )
+
+    approved = (
+        db.query(Report)
+        .filter(Report.approval_status == "Approved")
+        .count()
+    )
+
+    rejected = (
+        db.query(Report)
+        .filter(Report.approval_status == "Rejected")
+        .count()
+    )
+
+    changes_requested = (
+        db.query(Report)
+        .filter(Report.approval_status == "Changes Requested")
+        .count()
+    )
+
+    recent_reports = (
+        db.query(Report)
+        .order_by(Report.id.desc())
+        .limit(5)
+        .all()
+    )
+
+    return {
+        "summary": {
+            "total_reports": total_reports,
+            "pending_review": pending_review,
+            "approved": approved,
+            "rejected": rejected,
+            "changes_requested": changes_requested,
+        },
+        "reports_by_approval_status": count_reports_by_field(
+            db,
+            Report.approval_status,
+        ),
+        "reports_by_inspection_status": count_reports_by_field(
+            db,
+            Report.inspection_status,
+        ),
+        "reports_by_site": count_reports_by_field(
+            db,
+            Report.site_id,
+        ),
+        "reports_by_template": count_reports_by_field(
+            db,
+            Report.template_name,
+        ),
+        "defects_by_severity": get_defects_by_severity(db),
+        "recent_reports": [
+            {
+                "report_id": report.report_id,
+                "site_id": report.site_id,
+                "template_name": report.template_name,
+                "inspector_name": report.inspector_name,
+                "approval_status": report.approval_status,
+                "created_at": report.created_at,
+            }
+            for report in recent_reports
+        ],
+    }
+
+
+@router.get("/dashboard/summary", response_model=dict)
+def report_dashboard_summary(db: Session = Depends(get_db)):
+    return {
+        "total_reports": db.query(Report).count(),
+        "pending_review": db.query(Report).filter(
+            Report.approval_status == "Pending Review"
+        ).count(),
+        "approved": db.query(Report).filter(
+            Report.approval_status == "Approved"
+        ).count(),
+        "rejected": db.query(Report).filter(
+            Report.approval_status == "Rejected"
+        ).count(),
+        "changes_requested": db.query(Report).filter(
+            Report.approval_status == "Changes Requested"
+        ).count(),
+    }
+
+
+@router.get("/dashboard/by-site", response_model=dict)
+def reports_by_site(db: Session = Depends(get_db)):
+    return {
+        "reports_by_site": count_reports_by_field(db, Report.site_id),
+    }
+
+
+@router.get("/dashboard/by-template", response_model=dict)
+def reports_by_template(db: Session = Depends(get_db)):
+    return {
+        "reports_by_template": count_reports_by_field(db, Report.template_name),
+    }
+
+
+@router.get("/dashboard/defects-by-severity", response_model=dict)
+def defects_by_severity(db: Session = Depends(get_db)):
+    return {
+        "defects_by_severity": get_defects_by_severity(db),
+    }
+
+@router.get("/rules/photo-evidence", response_model=dict)
+def get_photo_evidence_rule():
+    return get_report_photo_rule()
 
 @router.get("/", response_model=list[ReportRead])
 def list_reports(
@@ -145,19 +325,6 @@ def create_report(report_in: ReportCreate, db: Session = Depends(get_db)):
     return serialize_report(report)
 
 
-@router.get("/{report_id}", response_model=ReportRead)
-def get_report(report_id: str, db: Session = Depends(get_db)):
-    report = db.query(Report).filter(Report.report_id == report_id).first()
-
-    if not report:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Report not found.",
-        )
-
-    return serialize_report(report)
-
-
 @router.patch("/{report_id}/approval", response_model=dict)
 def update_report_approval(
     report_id: str,
@@ -227,6 +394,18 @@ def list_rejected_reports(db: Session = Depends(get_db)):
     reports = (
         db.query(Report)
         .filter(Report.approval_status == "Rejected")
+        .order_by(Report.id.desc())
+        .all()
+    )
+
+    return [serialize_report(report) for report in reports]
+
+
+@router.get("/approval/changes-requested/list", response_model=list[ReportRead])
+def list_changes_requested_reports(db: Session = Depends(get_db)):
+    reports = (
+        db.query(Report)
+        .filter(Report.approval_status == "Changes Requested")
         .order_by(Report.id.desc())
         .all()
     )

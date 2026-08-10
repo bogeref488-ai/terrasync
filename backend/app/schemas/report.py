@@ -3,6 +3,16 @@ from typing import Any, Optional
 from pydantic import BaseModel
 
 
+class ReportPhoto(BaseModel):
+    photo_type: str
+    file_url: str
+    caption: Optional[str] = None
+    captured_at: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    source: str = "mobile_app_camera"
+
+
 class ReportAnswer(BaseModel):
     section_id: str
     item_id: str
@@ -10,7 +20,7 @@ class ReportAnswer(BaseModel):
     label: str
     value: Any
     comment: Optional[str] = None
-    photos: list[str] = []
+    photos: list[ReportPhoto] = []
 
 
 class ReportDefect(BaseModel):
@@ -21,7 +31,7 @@ class ReportDefect(BaseModel):
     defect_description: str
     severity: str
     recommended_action: Optional[str] = None
-    photos: list[str] = []
+    photos: list[ReportPhoto] = []
 
 
 class ReportBase(BaseModel):
@@ -49,6 +59,9 @@ class ReportRead(ReportBase):
     id: int
     template_name: str
     approval_status: str
+    coordinator_name: Optional[str] = None
+    coordinator_comment: Optional[str] = None
+    reviewed_at: Optional[str] = None
     created_at: str
 
     class Config:
@@ -59,3 +72,4 @@ class ReportApprovalUpdate(BaseModel):
     approval_status: str
     coordinator_name: str
     coordinator_comment: Optional[str] = None
+

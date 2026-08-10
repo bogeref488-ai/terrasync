@@ -1,4 +1,7 @@
+from pathlib import Path
+
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.api import api_router
 from app.core.config import settings
@@ -6,11 +9,17 @@ from app.db.init_db import init_db
 from app.db.session import test_database_connection
 
 
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="Offline-first field operations API for TerraSync.",
     version="0.1.0",
 )
+
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
 @app.on_event("startup")
