@@ -5,6 +5,10 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
+from fastapi.responses import FileResponse
+
+from app.services.pdf_reports import generate_report_pdf
+from app.services.email_reports import send_report_pdf_email
 
 from app.db.session import get_db
 from app.models.inspection_template import InspectionTemplate
@@ -15,6 +19,7 @@ from app.policies.report_rules import get_report_photo_rule
 from app.schemas.report import (
     ReportApprovalUpdate,
     ReportCreate,
+    ReportEmailRequest,
     ReportRead,
 
 )
@@ -324,6 +329,79 @@ def create_report(report_in: ReportCreate, db: Session = Depends(get_db)):
 
     return serialize_report(report)
 
+@router.get("/{report_id}/pdf", response_class=FileResponse)
+def download_report_pdf(report_id: str, db: Session = Depends(get_db)):
+    report = db.query(Report).filter(Report.report_id == report_id).first()
+
+    if not report:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Report not found.",
+        )
+
+    pdf_path = generate_report_pdf(report)
+
+    return FileResponse(
+        path=str(pdf_path),
+        media_type="application/pdf",
+        filename=f"{report.report_id}.pdf",
+    )
+@router.post("/{report_id}/email-pdf", response_model=dict)
+def email_report_pdf(
+    report_id: str,
+    email_in: ReportEmailRequest,
+    db: Session = Depends(get_db),
+):
+    report = db.query(Report).filter(Report.report_id == report_id).first()
+
+    if not report:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Report not found.",
+        )
+
+    if report.approval_status != "Approved":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only approved reports can be emailed as final PDF reports.",
+        )
+
+    pdf_path = generate_report_pdf(report)
+
+    subject = email_in.subject or f"TerraSync Approved Field Report - {report.report_id}"
+
+    body = email_in.message or f"""
+Dear Coordinator,
+
+Please find attached the approved TerraSync field report.
+
+Report ID: {report.report_id}
+Site ID: {report.site_id}
+Template: {report.template_name}
+Inspector: {report.inspector_name}
+Approval Status: {report.approval_status}
+
+This PDF includes the report details, field observations, defects, recommendations, and photos captured by the field engineer through the TerraSync mobile app.
+
+Regards,
+TerraSync Field Reporting System
+""".strip()
+
+    result = send_report_pdf_email(
+        to_email=email_in.to_email,
+        cc_email=email_in.cc_email,
+        subject=subject,
+        body=body,
+        pdf_path=pdf_path,
+    )
+
+    return {
+        "message": "Email process completed.",
+        "report_id": report.report_id,
+        "approval_status": report.approval_status,
+        "pdf_file": str(pdf_path),
+        "email_result": result,
+    }
 
 @router.patch("/{report_id}/approval", response_model=dict)
 def update_report_approval(

@@ -73,3 +73,8 @@ class ReportApprovalUpdate(BaseModel):
     coordinator_name: str
     coordinator_comment: Optional[str] = None
 
+class ReportEmailRequest(BaseModel):
+    to_email: str
+    cc_email: Optional[str] = None
+    subject: Optional[str] = None
+    message: Optional[str] = None
