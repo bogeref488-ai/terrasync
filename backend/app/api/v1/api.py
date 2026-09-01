@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1.routers import assets, auth, defects, demo, devices, health, operations, reports, sites, sync, templates, work_orders
+from app.api.v1.routers import configuration, assets, auth, defects, demo, devices, health, operations, reports, sites, sync, templates, work_orders
 
 api_router = APIRouter()
 api_router.include_router(health.router)
@@ -16,3 +16,5 @@ api_router.include_router(demo.router)
 api_router.include_router(auth.router)
 api_router.include_router(devices.router)
 api_router.include_router(operations.router)
+
+api_router.include_router(configuration.router)

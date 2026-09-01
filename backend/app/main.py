@@ -10,6 +10,7 @@ from app.api.v1.api import api_router
 from app.core.config import settings
 from app.db.session import Base, SessionLocal, engine
 from app.services.demo import seed_demo
+from app.services.configuration_seed import seed_configuration
 
 import app.models  # noqa: F401
 
@@ -20,6 +21,7 @@ async def lifespan(_: FastAPI):
     if settings.ENVIRONMENT in {"development", "demo"}:
         with SessionLocal() as db:
             seed_demo(db)
+            seed_configuration(db)
     yield
 
 

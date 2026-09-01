@@ -178,11 +178,9 @@ cython_debug/
 #  exclude from AI features like autocomplete and code analysis. Recommended for sensitive data
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
-.cursorindexingignore
-backend/terrasync.db
+.cursorindexingignorebackend/terrasync.db
 backend/test_terrasync.db
+backend/terrasync-backup-*.db
 backend/exports/
-backend/__pycache__/
 **/__pycache__/
-.pytest_cache/
 *.pyc

@@ -25,3 +25,5 @@ __all__ = [
     "WebSession",
     "WorkOrder",
 ]
+
+from app.models.configuration import AIRuleSet, AssetSchema, Client, Project, ReportLayout, TemplateDefinition, TemplateVersion  # noqa: F401,E501
