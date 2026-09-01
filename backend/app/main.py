@@ -1,58 +1,77 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.api import api_router
 from app.core.config import settings
-from app.db.init_db import init_db
-from app.db.session import test_database_connection
+from app.db.session import Base, SessionLocal, engine
+from app.services.demo import seed_demo
+
+import app.models  # noqa: F401
 
 
-UPLOAD_DIR = Path("uploads")
-UPLOAD_DIR.mkdir(exist_ok=True)
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    Base.metadata.create_all(bind=engine)
+    if settings.ENVIRONMENT in {"development", "demo"}:
+        with SessionLocal() as db:
+            seed_demo(db)
+    yield
 
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    description="Offline-first field operations API for TerraSync.",
-    version="0.1.0",
+    description="Offline-first, AI-assisted field surveying, inspection and reporting API.",
+    version="2.0.0-milestone2",
+    lifespan=lifespan,
 )
 
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
-
-
-@app.on_event("startup")
-def on_startup():
-    init_db()
-
-
-@app.get("/", tags=["root"])
-def read_root():
-    return {
-        "message": "Welcome to TerraSync API",
-        "status": "running",
-        "docs": "/docs",
-    }
-
-
-@app.get(f"{settings.API_V1_PREFIX}/health", tags=["health"])
-def health_check():
-    return {
-        "status": "ok",
-        "service": "TerraSync API",
-        "version": "0.1.0",
-    }
-
-
-@app.get(f"{settings.API_V1_PREFIX}/db-test", tags=["database"])
-def db_test():
-    is_connected = test_database_connection()
-
-    return {
-        "database_connected": is_connected,
-        "database_url": settings.DATABASE_URL,
-    }
-
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=settings.cors_origins != ["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(api_router, prefix=settings.API_V1_PREFIX)
+
+root_dir = Path(__file__).resolve().parents[2]
+field_dir = root_dir / "field_app"
+coordinator_dir = root_dir / "coordinator_dashboard"
+supervisor_dir = root_dir / "supervisor_dashboard"
+
+if field_dir.exists():
+    app.mount(
+        "/app",
+        StaticFiles(directory=field_dir, html=True),
+        name="field-app",
+    )
+
+if coordinator_dir.exists():
+    app.mount(
+        "/coordinator",
+        StaticFiles(directory=coordinator_dir, html=True),
+        name="coordinator-dashboard",
+    )
+
+if supervisor_dir.exists():
+    app.mount(
+        "/supervisor",
+        StaticFiles(directory=supervisor_dir, html=True),
+        name="supervisor-dashboard",
+    )
+
+
+@app.get("/")
+def root():
+    return {
+        "name": "TerraSync API",
+        "docs": "/docs",
+        "field_app": "/app/",
+        "coordinator": "/coordinator/",
+        "supervisor": "/supervisor/",
+    }

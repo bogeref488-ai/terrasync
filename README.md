@@ -1,236 +1,129 @@
-# TerraSync
+# TerraSync — Milestone 2
 
-**Reliable Field Operations. Anywhere.**
+# TerraSync Milestone 2
 
-TerraSync is an offline-first field operations platform built with Python. It helps field teams receive work orders, complete structured inspections, capture verified field evidence, record remarks and defects, generate professional reports, and synchronize data when connectivity becomes available.
+Milestone 2 connects the Milestone 1 role/device foundation to the field workflow and refreshes all three application surfaces.
 
-TerraSync uses telecommunications as the reference implementation, but the same inspection engine can support utilities, energy, water, construction, healthcare, agriculture, mining, transport, and other sectors that depend on reliable field data.
+## Working flow
+
+1. Coordinator signs in and publishes an assignment.
+2. Field technician activates a phone once with username + OTP.
+3. The phone keeps its registered session and opens directly on later launches.
+4. Assignments are cached locally.
+5. Technician starts/continues an assignment.
+6. Client-supplied inventory is downloaded when online.
+7. Missing assets can be created on-site with manufacturer, model, serial, quantity, height/elevation, dimensions, position, condition and notes.
+8. On-site assets require a live-camera full-picture capture.
+9. Inspection drafts and the sync outbox are persisted in IndexedDB.
+10. Evidence is captured by live camera, resized/compressed and watermarked with GPS + time only.
+11. Asset changes synchronize before report submission.
+12. Report sync is authenticated and idempotent.
+13. Submission runs AI pre-screening.
+14. Coordinator receives the report in the AI review queue and can approve or return it.
+15. Supervisor dashboard reflects completion, pending review, critical reports and escalations.
+16. PDF report generation remains available.
+
+## Routes
+
+- Field: `/app/`
+- Coordinator: `/coordinator/`
+- Supervisor: `/supervisor/`
+- API: `/docs`
+
+## Demo access
+
+Field technician:
+- username: `field.tech`
+- activation code: `246810`
+
+Coordinator:
+- username: `coordinator`
+- password: `demo123`
+
+Supervisor:
+- username: `supervisor`
+- password: `demo123`
+
+## Local database
+
+The schema now includes the `assets` table. For a local SQLite demo, delete the old database before first launch of this build. Production should use Alembic migrations rather than dropping a database.
+
+## Tested
+
+- one-time device activation
+- persistent device session
+- RBAC
+- coordinator assignment publication
+- technician assignment receipt
+- technician assignment start
+- asset creation with assignment authorization
+- report synchronization
+- idempotency
+- AI screening
+- coordinator review
+- supervisor metrics
+- PDF generation
+- JavaScript syntax
+
 
 ---
 
-## Why TerraSync?
+# TerraSync MVP
 
-Field teams often work in environments where internet connectivity is weak or unavailable. Many organizations still rely on paper forms, disconnected photos, spreadsheets, messaging apps, and delayed reporting.
+TerraSync is an offline-first, AI-assisted field surveying, inspection and reporting platform.
 
-TerraSync solves this by allowing engineers and supervisors to work from one structured workflow:
+## What works in this MVP
 
-```text
-Work Order
-↓
-Check-in
-↓
-Safety Readiness
-↓
-Inspection Template
-↓
-Checklist + Measurements
-↓
-Photo Evidence
-↓
-Remarks + Defects
-↓
-Report Generated
-↓
-Offline Save
-↓
-Secure Sync
+- FastAPI REST backend with SQLite for zero-config demos and PostgreSQL for Docker deployments.
+- Sites, work orders, inspection reports, defects, AI findings and change events persisted with SQLAlchemy.
+- Installable responsive PWA served by the backend.
+- Offline app shell plus a persistent local outbox for inspection submissions.
+- Idempotent push sync and cursor-based pull sync.
+- Conflict detection through report revisions.
+- Local hybrid AI/rules pre-screening for completeness, inconsistent values, abnormal readings, safety risks and critical conditions.
+- Human-review oriented AI findings and risk score.
+- PDF report generation including inspection data, AI findings and evidence manifest.
+- Demo seed data and automated end-to-end tests.
+
+## Fastest demo
+
+```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload
 ```
 
----
+Open:
 
-## Core Features
+- App: http://localhost:8000/app/
+- API docs: http://localhost:8000/docs
 
-- Offline-first mobile field operations
-- Work order assignment and tracking
-- Template-driven inspections
-- Structured checklist workflows
-- Photo evidence inside reports
-- GPS, timestamp, and Site ID tagging
-- Remarks and defect recording at every inspection level
-- Report generation
-- Sync queue for low-connectivity environments
-- Operations dashboard for supervisors and managers
-- Telecom reference implementation with reusable report types
-- Cross-sector inspection engine
+The default database is `backend/terrasync.db` and demo data is created automatically.
 
----
+## PostgreSQL demo
 
-## Telecom Reference Implementation
-
-TerraSync v1.0 includes the following telecom report templates:
-
-1. Tower Inspection Report
-2. Power Inspection Report
-3. RMS Report
-4. Preventive Maintenance Report
-5. Corrective Maintenance Report
-6. Transmission Inspection Report
-7. Shelter Inspection Report
-8. Site Acceptance Report
-
-Each report type has its own workflow and produces one structured report.
-
----
-
-## Standard Inspection Item
-
-Every inspection item follows one consistent structure:
-
-```text
-Inspection Item
-├── Status
-├── Measurement, if applicable
-├── Capture Photo
-├── Remarks / Description
-└── Defect Details, if required
+```bash
+cd docker
+docker compose up --build
 ```
 
-Photos are treated as evidence inside the report, not separate records.
+Then open http://localhost:8000/app/.
 
-Each photo automatically stores only:
+## Offline demonstration
 
-- GPS coordinates
-- Timestamp
-- Site ID
+1. Open the app while online once.
+2. Open **New inspection**.
+3. Use browser devtools to switch the network to Offline.
+4. Submit an inspection. It remains in the local outbox.
+5. Re-enable network access and press **Sync**.
+6. Open **Reports** to see the server AI risk score and download the generated PDF.
 
----
+## AI safety model
 
-## Offline-First Architecture
+The MVP intentionally uses a local deterministic pre-screening engine. It never autonomously approves reports. It flags issues for a human coordinator and works without internet access. The engine is designed to be replaced or augmented by a model provider later while preserving the same `AIFinding` contract.
 
-TerraSync is designed to work even when the field engineer has no internet connection.
+## Production gaps after MVP
 
-```text
-Mobile App
-↓
-SQLite Local Database
-↓
-Offline Sync Queue
-↓
-FastAPI Backend
-↓
-PostgreSQL Database
-↓
-Operations Dashboard
-```
-
-Data is captured locally, queued securely, and synchronized when connectivity returns.
-
----
-
-## Technology Stack
-
-| Layer | Technology |
-|---|---|
-| Mobile App | Flutter |
-| Backend API | Python, FastAPI |
-| Local Database | SQLite |
-| Central Database | PostgreSQL |
-| Queue / Cache | Redis |
-| Deployment | Docker |
-| Reporting | PDF / Excel export |
-| Version Control | GitHub |
-
----
-
-## Cross-Sector Applications
-
-Although telecom is the first reference implementation, TerraSync can be adapted for:
-
-- Utilities and energy
-- Renewable energy
-- Water and wastewater
-- Construction
-- Roads and bridges
-- Rail and transport
-- Healthcare facilities
-- Agriculture
-- Mining
-- Oil and gas
-- Government infrastructure
-
-The core idea is reusable: **one offline-first inspection engine, many field operations.**
-
----
-
-## Roadmap
-
-### Phase 1 — Foundation
-- Mobile app
-- Offline data capture
-- Inspection templates
-- Local database
-- Sync engine
-- Basic reports
-
-### Phase 2 — Expansion
-- Work order management
-- Advanced dashboard
-- Template builder
-- GIS / map integration
-- Alerts and notifications
-
-### Phase 3 — Intelligence
-- AI-assisted defect detection
-- Condition scoring
-- Predictive maintenance
-- Advanced analytics
-
-### Phase 4 — Scale
-- Multi-tenant organizations
-- Enterprise administration
-- API marketplace
-- Advanced permissions
-- High availability
-
-### Phase 5 — Ecosystem
-- Plugin architecture
-- Community templates
-- Third-party integrations
-- Public API
-- Global open-source community
-
----
-
-## Open Source Vision
-
-TerraSync is designed as an open-source project because reliable field operations should be accessible, transparent, and adaptable.
-
-The project welcomes contributions in:
-
-- Python backend development
-- Flutter mobile development
-- Offline sync logic
-- UX/UI design
-- Documentation
-- Testing
-- Telecom inspection templates
-- Cross-sector templates
-- GIS and reporting integrations
-
----
-
-## Project Status
-
-TerraSync is currently in concept, design, and prototype preparation for PyCon Africa 2026.
-
-The current package includes:
-
-- 15-slide technical presentation
-- A0 poster
-- One-page technical brief
-- Architecture diagrams
-- Mobile and dashboard UI mockups
-- Demo workflow
-- Speaker notes
-
----
-
-## License
-
-License to be confirmed before public release.
-
----
-
-## Tagline
-
-**Reliable Field Operations. Anywhere.**
+Authentication/authorization, encrypted evidence object storage, signed evidence provenance, background job processing, schema migrations, richer template authoring, device enrollment, telemetry, and production-grade observability remain follow-on work.

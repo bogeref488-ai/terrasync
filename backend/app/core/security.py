@@ -1,53 +1,39 @@
-from datetime import datetime, timedelta, timezone
-from typing import Any
+from __future__ import annotations
 
-from jose import jwt
-from passlib.context import CryptContext
-
-
-SECRET_KEY = "terrasync-local-development-secret-key"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
+import hashlib
+import hmac
+import secrets
 
 
-pwd_context = CryptContext(
-    schemes=["pbkdf2_sha256"],
-    deprecated="auto",
-)
-
-
-def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
-
-
-def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
-
-
-def hash_password(password: str) -> str:
-    return get_password_hash(password)
-
-
-def create_access_token(
-    subject: str | Any,
-    expires_delta: timedelta | None = None,
-) -> str:
-    if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
-    else:
-        expire = datetime.now(timezone.utc) + timedelta(
-            minutes=ACCESS_TOKEN_EXPIRE_MINUTES
-        )
-
-    to_encode = {
-        "exp": expire,
-        "sub": str(subject),
-    }
-
-    encoded_jwt = jwt.encode(
-        to_encode,
-        SECRET_KEY,
-        algorithm=ALGORITHM,
+def hash_secret(secret: str, salt: str | None = None) -> str:
+    """Hash a password, OTP, or device credential using PBKDF2-HMAC-SHA256."""
+    actual_salt = salt or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        secret.encode("utf-8"),
+        actual_salt.encode("utf-8"),
+        210_000,
     )
+    return f"pbkdf2_sha256${actual_salt}${digest.hex()}"
 
-    return encoded_jwt
+
+def verify_secret(secret: str, encoded: str) -> bool:
+    """Verify a secret against a stored PBKDF2 hash."""
+    try:
+        algorithm, salt, expected = encoded.split("$", 2)
+    except ValueError:
+        return False
+    if algorithm != "pbkdf2_sha256":
+        return False
+    candidate = hash_secret(secret, salt).split("$", 2)[2]
+    return hmac.compare_digest(candidate, expected)
+
+
+def generate_token() -> str:
+    """Create a high-entropy bearer credential."""
+    return secrets.token_urlsafe(48)
+
+
+def token_fingerprint(token: str) -> str:
+    """Create the lookup fingerprint stored for bearer credentials."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()

@@ -1,491 +1,148 @@
-import json
 from datetime import datetime, timezone
-from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
-from fastapi.responses import FileResponse
-
-from app.services.pdf_reports import generate_report_pdf
-from app.services.email_reports import send_report_pdf_email
 
 from app.db.session import get_db
-from app.models.inspection_template import InspectionTemplate
-from app.models.report import Report
-from app.models.site import Site
-from app.models.work_order import WorkOrder
-from app.policies.report_rules import get_report_photo_rule
-from app.schemas.report import (
-    ReportApprovalUpdate,
-    ReportCreate,
-    ReportEmailRequest,
-    ReportRead,
+from app.models import AIFinding, ChangeEvent, InspectionReport, Site, WorkOrder
+from app.schemas.domain import FindingOut, ReportCreate, ReportOut, ReportUpdate
+from app.services.ai_screening import persist_screening
+from app.services.reports import build_report_pdf
 
-)
-
-router = APIRouter()
+router = APIRouter(prefix="/reports", tags=["reports"])
 
 
-VALID_APPROVAL_STATUSES = [
-    "Pending Review",
-    "Approved",
-    "Rejected",
-    "Changes Requested",
-]
+def next_report_no(db: Session) -> str:
+    count = len(list(db.scalars(select(InspectionReport.id))))
+    return f"RPT-{datetime.now(timezone.utc).year}-{count + 1:05d}"
 
 
-def serialize_report(report: Report) -> dict:
-    return {
-        "id": report.id,
-        "report_id": report.report_id,
-        "work_order_id": report.work_order_id,
-        "site_id": report.site_id,
-        "template_id": report.template_id,
-        "template_name": report.template_name,
-        "inspector_name": report.inspector_name,
-        "inspector_company": report.inspector_company,
-        "inspection_status": report.inspection_status,
-        "approval_status": report.approval_status,
-        "coordinator_name": report.coordinator_name,
-        "coordinator_comment": report.coordinator_comment,
-        "reviewed_at": report.reviewed_at,
-        "findings": report.findings,
-        "recommendations": report.recommendations,
-        "answers": json.loads(report.answers),
-        "defects": json.loads(report.defects) if report.defects else [],
-        "created_at": report.created_at,
-    }
-
-
-def count_reports_by_field(db: Session, field):
-    rows = (
-        db.query(field, func.count(Report.id))
-        .group_by(field)
-        .all()
-    )
-
-    return [
-        {
-            "name": row[0] or "Unknown",
-            "count": row[1],
-        }
-        for row in rows
-    ]
-
-
-def get_defects_by_severity(db: Session) -> list[dict]:
-    reports = db.query(Report).all()
-
-    severity_counts: dict[str, int] = {
-        "Low": 0,
-        "Medium": 0,
-        "High": 0,
-        "Critical": 0,
-        "Unknown": 0,
-    }
-
-    for report in reports:
-        if not report.defects:
-            continue
-
-        try:
-            defects = json.loads(report.defects)
-        except json.JSONDecodeError:
-            continue
-
-        for defect in defects:
-            severity = defect.get("severity") or "Unknown"
-
-            if severity not in severity_counts:
-                severity_counts[severity] = 0
-
-            severity_counts[severity] += 1
-
-    return [
-        {
-            "severity": severity,
-            "count": count,
-        }
-        for severity, count in severity_counts.items()
-    ]
-
-
-@router.get("/dashboard/status", response_model=dict)
-def report_status_dashboard(db: Session = Depends(get_db)):
-    total_reports = db.query(Report).count()
-
-    pending_review = (
-        db.query(Report)
-        .filter(Report.approval_status == "Pending Review")
-        .count()
-    )
-
-    approved = (
-        db.query(Report)
-        .filter(Report.approval_status == "Approved")
-        .count()
-    )
-
-    rejected = (
-        db.query(Report)
-        .filter(Report.approval_status == "Rejected")
-        .count()
-    )
-
-    changes_requested = (
-        db.query(Report)
-        .filter(Report.approval_status == "Changes Requested")
-        .count()
-    )
-
-    recent_reports = (
-        db.query(Report)
-        .order_by(Report.id.desc())
-        .limit(5)
-        .all()
-    )
-
-    return {
-        "summary": {
-            "total_reports": total_reports,
-            "pending_review": pending_review,
-            "approved": approved,
-            "rejected": rejected,
-            "changes_requested": changes_requested,
-        },
-        "reports_by_approval_status": count_reports_by_field(
-            db,
-            Report.approval_status,
-        ),
-        "reports_by_inspection_status": count_reports_by_field(
-            db,
-            Report.inspection_status,
-        ),
-        "reports_by_site": count_reports_by_field(
-            db,
-            Report.site_id,
-        ),
-        "reports_by_template": count_reports_by_field(
-            db,
-            Report.template_name,
-        ),
-        "defects_by_severity": get_defects_by_severity(db),
-        "recent_reports": [
-            {
-                "report_id": report.report_id,
-                "site_id": report.site_id,
-                "template_name": report.template_name,
-                "inspector_name": report.inspector_name,
-                "approval_status": report.approval_status,
-                "created_at": report.created_at,
-            }
-            for report in recent_reports
-        ],
-    }
-
-
-@router.get("/dashboard/summary", response_model=dict)
-def report_dashboard_summary(db: Session = Depends(get_db)):
-    return {
-        "total_reports": db.query(Report).count(),
-        "pending_review": db.query(Report).filter(
-            Report.approval_status == "Pending Review"
-        ).count(),
-        "approved": db.query(Report).filter(
-            Report.approval_status == "Approved"
-        ).count(),
-        "rejected": db.query(Report).filter(
-            Report.approval_status == "Rejected"
-        ).count(),
-        "changes_requested": db.query(Report).filter(
-            Report.approval_status == "Changes Requested"
-        ).count(),
-    }
-
-
-@router.get("/dashboard/by-site", response_model=dict)
-def reports_by_site(db: Session = Depends(get_db)):
-    return {
-        "reports_by_site": count_reports_by_field(db, Report.site_id),
-    }
-
-
-@router.get("/dashboard/by-template", response_model=dict)
-def reports_by_template(db: Session = Depends(get_db)):
-    return {
-        "reports_by_template": count_reports_by_field(db, Report.template_name),
-    }
-
-
-@router.get("/dashboard/defects-by-severity", response_model=dict)
-def defects_by_severity(db: Session = Depends(get_db)):
-    return {
-        "defects_by_severity": get_defects_by_severity(db),
-    }
-
-@router.get("/rules/photo-evidence", response_model=dict)
-def get_photo_evidence_rule():
-    return get_report_photo_rule()
-
-@router.get("/", response_model=list[ReportRead])
-def list_reports(
-    approval_status: Optional[str] = Query(default=None),
-    site_id: Optional[str] = Query(default=None),
-    template_id: Optional[str] = Query(default=None),
-    db: Session = Depends(get_db),
-):
-    query = db.query(Report)
-
-    if approval_status:
-        query = query.filter(Report.approval_status == approval_status)
-
-    if site_id:
-        query = query.filter(Report.site_id == site_id)
-
-    if template_id:
-        query = query.filter(Report.template_id == template_id)
-
-    reports = query.order_by(Report.id.desc()).all()
-
-    return [serialize_report(report) for report in reports]
-
-
-@router.post("/", response_model=ReportRead, status_code=status.HTTP_201_CREATED)
-def create_report(report_in: ReportCreate, db: Session = Depends(get_db)):
-    existing_report = (
-        db.query(Report)
-        .filter(Report.report_id == report_in.report_id)
-        .first()
-    )
-
-    if existing_report:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Report ID already exists.",
-        )
-
-    site = db.query(Site).filter(Site.site_id == report_in.site_id).first()
-
-    if not site:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Site not found.",
-        )
-
-    work_order = (
-        db.query(WorkOrder)
-        .filter(WorkOrder.work_order_id == report_in.work_order_id)
-        .first()
-    )
-
+def validate_links(db: Session, work_order_id: str, site_id: str) -> None:
+    work_order = db.get(WorkOrder, work_order_id)
     if not work_order:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Work order not found.",
-        )
+        raise HTTPException(status_code=404, detail="Work order not found")
+    if not db.get(Site, site_id):
+        raise HTTPException(status_code=404, detail="Site not found")
+    if work_order.site_id != site_id:
+        raise HTTPException(status_code=422, detail="Work order does not belong to selected site")
 
-    if work_order.site_id != report_in.site_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Work order does not belong to this site.",
-        )
 
-    template = (
-        db.query(InspectionTemplate)
-        .filter(InspectionTemplate.template_id == report_in.template_id)
-        .filter(InspectionTemplate.status == "Active")
-        .first()
+def create_or_get_report(db: Session, payload: ReportCreate) -> InspectionReport:
+    existing = db.scalar(select(InspectionReport).where(InspectionReport.client_id == payload.client_id))
+    if existing:
+        return existing
+
+    validate_links(db, payload.work_order_id, payload.site_id)
+    data = payload.model_dump(exclude={"submit"})
+    data["evidence"] = [item.model_dump(mode="json") for item in payload.evidence]
+    report = InspectionReport(
+        **data,
+        report_no=next_report_no(db),
+        status="Submitted" if payload.submit else "Draft",
+        submitted_at=datetime.now(timezone.utc) if payload.submit else None,
     )
-
-    if not template:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Active inspection template not found.",
-        )
-
-    now = datetime.now(timezone.utc)
-
-    report = Report(
-        report_id=report_in.report_id,
-        work_order_id=report_in.work_order_id,
-        site_id=report_in.site_id,
-        template_id=report_in.template_id,
-        template_name=template.name,
-        inspector_name=report_in.inspector_name,
-        inspector_company=report_in.inspector_company,
-        inspection_status=report_in.inspection_status,
-        approval_status="Pending Review",
-        findings=report_in.findings,
-        recommendations=report_in.recommendations,
-        answers=json.dumps([answer.model_dump() for answer in report_in.answers]),
-        defects=json.dumps([defect.model_dump() for defect in report_in.defects]),
-        created_at=now.isoformat(),
-    )
-
     db.add(report)
+    db.flush()
+    db.add(
+        ChangeEvent(
+            entity_type="report",
+            entity_id=report.id,
+            operation="upsert",
+            payload={"client_id": report.client_id, "report_no": report.report_no, "revision": report.revision},
+        )
+    )
     db.commit()
     db.refresh(report)
+    if payload.submit:
+        persist_screening(db, report)
+        db.refresh(report)
+    return report
 
-    return serialize_report(report)
 
-@router.get("/{report_id}/pdf", response_class=FileResponse)
-def download_report_pdf(report_id: str, db: Session = Depends(get_db)):
-    report = db.query(Report).filter(Report.report_id == report_id).first()
+@router.get("", response_model=list[ReportOut])
+def list_reports(db: Session = Depends(get_db)) -> list[InspectionReport]:
+    return list(db.scalars(select(InspectionReport).order_by(InspectionReport.updated_at.desc())))
 
+
+@router.post("", response_model=ReportOut, status_code=status.HTTP_201_CREATED)
+def create_report(payload: ReportCreate, db: Session = Depends(get_db)) -> InspectionReport:
+    return create_or_get_report(db, payload)
+
+
+@router.get("/{report_id}", response_model=ReportOut)
+def get_report(report_id: str, db: Session = Depends(get_db)) -> InspectionReport:
+    report = db.get(InspectionReport, report_id)
     if not report:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Report not found.",
+        raise HTTPException(status_code=404, detail="Report not found")
+    return report
+
+
+@router.patch("/{report_id}", response_model=ReportOut)
+def update_report(report_id: str, payload: ReportUpdate, db: Session = Depends(get_db)) -> InspectionReport:
+    report = db.get(InspectionReport, report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+    if payload.revision != report.revision:
+        raise HTTPException(status_code=409, detail={"message": "Revision conflict", "server_revision": report.revision})
+
+    updates = payload.model_dump(exclude_none=True, exclude={"revision"})
+    if "evidence" in updates:
+        updates["evidence"] = [item.model_dump(mode="json") if hasattr(item, "model_dump") else item for item in payload.evidence or []]
+    for key, value in updates.items():
+        setattr(report, key, value)
+    report.revision += 1
+    if report.status == "Submitted" and report.submitted_at is None:
+        report.submitted_at = datetime.now(timezone.utc)
+
+    db.add(
+        ChangeEvent(
+            entity_type="report",
+            entity_id=report.id,
+            operation="upsert",
+            payload={"client_id": report.client_id, "report_no": report.report_no, "revision": report.revision},
         )
+    )
+    db.commit()
+    db.refresh(report)
+    if report.status == "Submitted":
+        persist_screening(db, report)
+        db.refresh(report)
+    return report
 
-    pdf_path = generate_report_pdf(report)
 
-    return FileResponse(
-        path=str(pdf_path),
+@router.post("/{report_id}/screen", response_model=list[FindingOut])
+def screen(report_id: str, db: Session = Depends(get_db)) -> list[AIFinding]:
+    report = db.get(InspectionReport, report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return persist_screening(db, report)
+
+
+@router.get("/{report_id}/findings", response_model=list[FindingOut])
+def findings(report_id: str, db: Session = Depends(get_db)) -> list[AIFinding]:
+    if not db.get(InspectionReport, report_id):
+        raise HTTPException(status_code=404, detail="Report not found")
+    return list(
+        db.scalars(
+            select(AIFinding)
+            .where(AIFinding.report_id == report_id)
+            .order_by(AIFinding.created_at)
+        )
+    )
+
+
+@router.get("/{report_id}/pdf")
+def report_pdf(report_id: str, db: Session = Depends(get_db)) -> Response:
+    report = db.get(InspectionReport, report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+    if report.ai_status != "screened":
+        persist_screening(db, report)
+        db.refresh(report)
+    pdf = build_report_pdf(db, report)
+    return Response(
+        content=pdf,
         media_type="application/pdf",
-        filename=f"{report.report_id}.pdf",
+        headers={"Content-Disposition": f'attachment; filename="{report.report_no}.pdf"'},
     )
-@router.post("/{report_id}/email-pdf", response_model=dict)
-def email_report_pdf(
-    report_id: str,
-    email_in: ReportEmailRequest,
-    db: Session = Depends(get_db),
-):
-    report = db.query(Report).filter(Report.report_id == report_id).first()
-
-    if not report:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Report not found.",
-        )
-
-    if report.approval_status != "Approved":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only approved reports can be emailed as final PDF reports.",
-        )
-
-    pdf_path = generate_report_pdf(report)
-
-    subject = email_in.subject or f"TerraSync Approved Field Report - {report.report_id}"
-
-    body = email_in.message or f"""
-Dear Coordinator,
-
-Please find attached the approved TerraSync field report.
-
-Report ID: {report.report_id}
-Site ID: {report.site_id}
-Template: {report.template_name}
-Inspector: {report.inspector_name}
-Approval Status: {report.approval_status}
-
-This PDF includes the report details, field observations, defects, recommendations, and photos captured by the field engineer through the TerraSync mobile app.
-
-Regards,
-TerraSync Field Reporting System
-""".strip()
-
-    result = send_report_pdf_email(
-        to_email=email_in.to_email,
-        cc_email=email_in.cc_email,
-        subject=subject,
-        body=body,
-        pdf_path=pdf_path,
-    )
-
-    return {
-        "message": "Email process completed.",
-        "report_id": report.report_id,
-        "approval_status": report.approval_status,
-        "pdf_file": str(pdf_path),
-        "email_result": result,
-    }
-
-@router.patch("/{report_id}/approval", response_model=dict)
-def update_report_approval(
-    report_id: str,
-    approval_in: ReportApprovalUpdate,
-    db: Session = Depends(get_db),
-):
-    report = db.query(Report).filter(Report.report_id == report_id).first()
-
-    if not report:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Report not found.",
-        )
-
-    if approval_in.approval_status not in VALID_APPROVAL_STATUSES:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid approval status. Use one of: {VALID_APPROVAL_STATUSES}",
-        )
-
-    now = datetime.now(timezone.utc)
-
-    report.approval_status = approval_in.approval_status
-    report.coordinator_name = approval_in.coordinator_name
-    report.coordinator_comment = approval_in.coordinator_comment
-    report.reviewed_at = now.isoformat()
-
-    db.commit()
-    db.refresh(report)
-
-    return {
-        "message": "Report approval status updated successfully.",
-        "report_id": report.report_id,
-        "approval_status": report.approval_status,
-        "coordinator_name": report.coordinator_name,
-        "coordinator_comment": report.coordinator_comment,
-        "reviewed_at": report.reviewed_at,
-    }
-
-
-@router.get("/approval/pending/list", response_model=list[ReportRead])
-def list_pending_reports(db: Session = Depends(get_db)):
-    reports = (
-        db.query(Report)
-        .filter(Report.approval_status == "Pending Review")
-        .order_by(Report.id.desc())
-        .all()
-    )
-
-    return [serialize_report(report) for report in reports]
-
-
-@router.get("/approval/approved/list", response_model=list[ReportRead])
-def list_approved_reports(db: Session = Depends(get_db)):
-    reports = (
-        db.query(Report)
-        .filter(Report.approval_status == "Approved")
-        .order_by(Report.id.desc())
-        .all()
-    )
-
-    return [serialize_report(report) for report in reports]
-
-
-@router.get("/approval/rejected/list", response_model=list[ReportRead])
-def list_rejected_reports(db: Session = Depends(get_db)):
-    reports = (
-        db.query(Report)
-        .filter(Report.approval_status == "Rejected")
-        .order_by(Report.id.desc())
-        .all()
-    )
-
-    return [serialize_report(report) for report in reports]
-
-
-@router.get("/approval/changes-requested/list", response_model=list[ReportRead])
-def list_changes_requested_reports(db: Session = Depends(get_db)):
-    reports = (
-        db.query(Report)
-        .filter(Report.approval_status == "Changes Requested")
-        .order_by(Report.id.desc())
-        .all()
-    )
-
-    return [serialize_report(report) for report in reports]

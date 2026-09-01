@@ -1,21 +1,31 @@
 services:
   postgres:
     image: postgres:16
-    container_name: terrasync_postgres
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: terrasync
-    ports:
-      - "5432:5432"
     volumes:
       - terrasync_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d terrasync"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
-  redis:
-    image: redis:7
-    container_name: terrasync_redis
+  api:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    environment:
+      ENVIRONMENT: demo
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/terrasync
+      CORS_ORIGINS: "*"
     ports:
-      - "6379:6379"
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   terrasync_pg_data:

@@ -1,60 +1,153 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from __future__ import annotations
+
+import random
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.dependencies import get_current_user, require_roles
+from app.core.security import generate_token, hash_secret, token_fingerprint, verify_secret
 from app.db.session import get_db
-from app.schemas.user import LoginRequest, TokenResponse, UserCreate, UserRead
-from app.services.users import authenticate_user, create_user, get_user_by_email
-from app.core.security import create_access_token
-
-
-router = APIRouter()
-
-
-@router.post(
-    "/register",
-    response_model=UserRead,
-    status_code=status.HTTP_201_CREATED,
+from app.models import ActivationCode, Device, User, WebSession
+from app.schemas.auth import (
+    ActivationCodeCreate,
+    ActivationCodeIssued,
+    AuthResponse,
+    DeviceActivationRequest,
+    StaffLoginRequest,
+    UserOut,
 )
-def register_user(
-    user_in: UserCreate,
-    db: Session = Depends(get_db),
-):
-    existing_user = get_user_by_email(db, user_in.email)
 
-    if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered.",
+router = APIRouter(prefix="/auth", tags=["authentication"])
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def aware(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+@router.post("/activate-device", response_model=AuthResponse)
+def activate_device(payload: DeviceActivationRequest, db: Session = Depends(get_db)) -> AuthResponse:
+    """Consume a one-time code and permanently register one field device."""
+    user = db.scalar(select(User).where(User.username == payload.username))
+    if not user or not user.active or user.role != "FIELD_TECHNICIAN":
+        raise HTTPException(status_code=401, detail="Invalid activation credentials")
+
+    codes = list(
+        db.scalars(
+            select(ActivationCode)
+            .where(ActivationCode.user_id == user.id, ActivationCode.used_at.is_(None))
+            .order_by(ActivationCode.created_at.desc())
         )
+    )
+    match = next(
+        (
+            item
+            for item in codes
+            if aware(item.expires_at) > utcnow() and verify_secret(payload.code, item.code_hash)
+        ),
+        None,
+    )
+    if not match:
+        raise HTTPException(status_code=401, detail="Invalid or expired activation code")
 
-    return create_user(db, user_in)
+    existing = db.scalar(select(Device).where(Device.device_key == payload.device_key))
+    if existing and existing.active and existing.revoked_at is None:
+        raise HTTPException(status_code=409, detail="This device is already registered")
 
+    token = generate_token()
+    if existing:
+        existing.user_id = user.id
+        existing.device_name = payload.device_name
+        existing.platform = payload.platform
+        existing.token_fingerprint = token_fingerprint(token)
+        existing.active = True
+        existing.revoked_at = None
+        existing.activated_at = utcnow()
+        existing.last_seen_at = utcnow()
+        device = existing
+    else:
+        device = Device(
+            user_id=user.id,
+            device_name=payload.device_name,
+            platform=payload.platform,
+            device_key=payload.device_key,
+            token_fingerprint=token_fingerprint(token),
+        )
+        db.add(device)
 
-@router.post(
-    "/login",
-    response_model=TokenResponse,
-)
-def login(
-    login_data: LoginRequest,
-    db: Session = Depends(get_db),
-):
-    user = authenticate_user(
-        db=db,
-        email=login_data.email,
-        password=login_data.password,
+    match.used_at = utcnow()
+    db.commit()
+    db.refresh(device)
+    return AuthResponse(
+        access_token=token,
+        user=UserOut.model_validate(user),
+        device_id=device.id,
     )
 
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password.",
+
+@router.post("/staff-login", response_model=AuthResponse)
+def staff_login(payload: StaffLoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
+    """Authenticate coordinator, supervisor, or administrator dashboards."""
+    user = db.scalar(select(User).where(User.username == payload.username))
+    if (
+        not user
+        or not user.active
+        or user.role not in {"COORDINATOR", "SUPERVISOR", "ADMIN"}
+        or not user.password_hash
+        or not verify_secret(payload.password, user.password_hash)
+    ):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+
+    token = generate_token()
+    expires_at = utcnow() + timedelta(hours=12)
+    db.add(
+        WebSession(
+            user_id=user.id,
+            token_fingerprint=token_fingerprint(token),
+            expires_at=expires_at,
         )
+    )
+    db.commit()
+    return AuthResponse(
+        access_token=token,
+        user=UserOut.model_validate(user),
+        expires_at=expires_at,
+    )
 
-    access_token = create_access_token(subject=user.email)
 
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "role": user.role,
-        "full_name": user.full_name,
-    }
+@router.get("/me", response_model=UserOut)
+def me(user: User = Depends(get_current_user)) -> User:
+    return user
+
+
+@router.post("/activation-codes", response_model=ActivationCodeIssued)
+def issue_activation_code(
+    payload: ActivationCodeCreate,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_roles("COORDINATOR", "ADMIN")),
+) -> ActivationCodeIssued:
+    technician = db.get(User, payload.user_id)
+    if not technician or technician.role != "FIELD_TECHNICIAN":
+        raise HTTPException(status_code=404, detail="Field technician not found")
+
+    code = f"{random.SystemRandom().randint(0, 999999):06d}"
+    expires_at = utcnow() + timedelta(minutes=payload.expires_minutes)
+    db.add(
+        ActivationCode(
+            user_id=technician.id,
+            code_hash=hash_secret(code),
+            expires_at=expires_at,
+        )
+    )
+    db.commit()
+    return ActivationCodeIssued(
+        user_id=technician.id,
+        code=code,
+        expires_at=expires_at,
+    )
