@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./terrasync.db"
     ENVIRONMENT: str = "development"
     CORS_ORIGINS: str = "*"
+    AUTO_MIGRATE_DEVELOPMENT: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.api import api_router
 from app.core.config import settings
+from app.db.migrations import require_current_schema, upgrade_database
 from app.db.session import Base, SessionLocal, engine
 from app.services.demo import seed_demo
 from app.services.configuration_seed import seed_configuration
@@ -17,7 +18,13 @@ import app.models  # noqa: F401
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    Base.metadata.create_all(bind=engine)
+    if settings.ENVIRONMENT == "test":
+        Base.metadata.create_all(bind=engine)
+    elif settings.ENVIRONMENT in {"development", "demo"} and settings.AUTO_MIGRATE_DEVELOPMENT:
+        upgrade_database(engine, allow_legacy_bootstrap=True)
+    else:
+        require_current_schema(engine)
+
     if settings.ENVIRONMENT in {"development", "demo"}:
         with SessionLocal() as db:
             seed_demo(db)
